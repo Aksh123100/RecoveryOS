@@ -113,6 +113,207 @@ _workflow = RazorpayRecoveryWorkflow(
     agent=_agent,
     executor=_executor,
 )
+def _find_demo_ambiguous_case() -> RecoveryCase | None:
+    """
+    Find a deterministic synthetic case whose ML decision is
+    ambiguous enough to trigger the agent fallback.
+
+    This only evaluates the ML model. It does not execute anything.
+    """
+
+    actions = (
+        "retry_now",
+        "retry_later",
+        "request_alternate_method",
+    )
+
+    costs = {
+        "retry_now": 0.20,
+        "retry_later": 0.20,
+        "request_alternate_method": 1.50,
+    }
+
+    failure_codes = (
+        "TIMEOUT",
+        "NETWORK_ERROR",
+        "DECLINED",
+    )
+
+    success_rates = (
+        0.50,
+        0.55,
+        0.60,
+        0.65,
+        0.70,
+        0.75,
+        0.80,
+        0.85,
+        0.90,
+    )
+
+    merchant_failure_rates = (
+        0.05,
+        0.10,
+        0.15,
+        0.20,
+        0.25,
+        0.30,
+        0.40,
+    )
+
+    days_since_success = (
+        1,
+        3,
+        7,
+        14,
+    )
+
+    retry_counts = (
+        0,
+        1,
+        2,
+    )
+
+    time_since_failure = (
+        0.5,
+        1.0,
+        3.0,
+        6.0,
+    )
+
+    for failure_code in failure_codes:
+        for success_rate in success_rates:
+            for merchant_failure_rate in merchant_failure_rates:
+                for days in days_since_success:
+                    for retry_count in retry_counts:
+                        for elapsed in time_since_failure:
+
+                            case = RecoveryCase(
+                                case_id="demo_agent_ambiguity",
+                                amount=100.0,
+                                failure_code=failure_code,
+                                customer_previous_success_rate=success_rate,
+                                merchant_recent_failure_rate=merchant_failure_rate,
+                                days_since_last_success=float(days),
+                                retry_count=retry_count,
+                                time_since_failure=elapsed,
+                                device_type="unknown",
+                                time_of_day="unknown",
+                            )
+
+                            allowed = [
+                                action
+                                for action in actions
+                                if _policy.check(
+                                    case,
+                                    action,
+                                ).allowed
+                            ]
+
+                            if len(allowed) < 2:
+                                continue
+
+                            feature_case = case.to_feature_case()
+
+                            _, probabilities = _model.choose(
+                                feature_case,
+                                tuple(allowed),
+                            )
+
+                            ranked = sorted(
+                                allowed,
+                                key=lambda action: (
+                                    probabilities[action]
+                                    * case.amount
+                                    - costs[action]
+                                ),
+                                reverse=True,
+                            )
+
+                            values = [
+                                probabilities[action]
+                                * case.amount
+                                - costs[action]
+                                for action in ranked
+                            ]
+
+                            ambiguous = (
+                                len(values) > 1
+                                and (
+                                    (values[0] - values[1])
+                                    / max(case.amount, 1.0)
+                                )
+                                < 0.02
+                            )
+
+                            if ambiguous:
+                                return case
+
+    return None
+
+@app.post(
+    "/demo/agent",
+)
+def demo_agent():
+    """
+    Controlled demonstration of the real agent fallback.
+
+    This endpoint does NOT create a Razorpay order.
+    It only proves that the real Groq agent can be invoked
+    on an ambiguous ML case.
+    """
+
+    if provider_name != "groq":
+        raise HTTPException(
+            503,
+            "Real Groq provider is not enabled. "
+            "Set RECOVERYOS_AGENT_PROVIDER=groq.",
+        )
+
+    case = _find_demo_ambiguous_case()
+
+    if case is None:
+        raise HTTPException(
+            500,
+            "Could not find an ambiguous ML case "
+            "for the configured model.",
+        )
+
+    demo_workflow = RazorpayRecoveryWorkflow(
+        _model,
+        _policy,
+        _audit,
+        agent=_agent,
+        executor=None,
+    )
+
+    result = demo_workflow.handle_case(case)
+
+    _state.put_case(case)
+
+    logger.info(
+        "[AGENT DEMO] case=%s source=%s action=%s "
+        "agent_invoked=%s",
+        case.case_id,
+        result.source,
+        result.action,
+        case.agent_invoked,
+    )
+
+    return {
+        "ok": True,
+        "demo": True,
+        "provider": provider_name,
+        "case_id": case.case_id,
+        "decision_source": result.source,
+        "selected_action": result.action,
+        "agent_invoked": case.agent_invoked,
+        "execution": None,
+        "message": (
+            "Real Groq agent was invoked on an ambiguous "
+            "ML case. No Razorpay order was created."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------

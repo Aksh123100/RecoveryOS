@@ -30,11 +30,36 @@ class GroqProvider(AgentProvider):
         self.api_key=api_key or os.getenv("GROQ_API_KEY"); self.model=model or os.getenv("GROQ_MODEL")
         self.base_url=os.getenv("GROQ_BASE_URL","https://api.groq.com/openai/v1")
         if not self.api_key or not self.model: raise ValueError("GROQ_API_KEY and GROQ_MODEL are required")
-    def complete(self,messages,tools):
-        body={"model":self.model,"messages":[{"role":"system","content":SYSTEM_PROMPT}]+messages,
-              "tools":tools,"tool_choice":"auto","temperature":0}
-        r=requests.post(self.base_url+"/chat/completions",
-                        headers={"Authorization":"Bearer "+self.api_key,"Content-Type":"application/json"},
-                        json=body,timeout=30)
-        r.raise_for_status()
+    
+    def complete(self, messages, tools):
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT}
+            ] + messages,
+            "temperature": 0,
+        }
+
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+        else:
+            # Final synthesis: explicitly prohibit tool calls.
+            body["tool_choice"] = "none"
+
+        r = requests.post(
+            self.base_url + "/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=60,
+        )
+
+        if not r.ok:
+            raise RuntimeError(
+                f"Groq API error {r.status_code}: {r.text}"
+            )
+
         return r.json()["choices"][0]["message"]

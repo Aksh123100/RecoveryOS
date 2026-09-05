@@ -82,7 +82,12 @@ class RazorpayRecoveryWorkflow:
                 proposed += [a for a in ranked if a not in proposed]
                 ranked = proposed
                 source = "agent"
-                self.audit.record("agent_decision", case_id=case.case_id, proposal=proposal, agent_invoked=True)
+                self.audit.record(
+    "agent_fallback" if proposal.get("fallback") else "agent_decision",
+    case_id=case.case_id,
+    proposal=proposal,
+    agent_invoked=True,
+)
 
         self.audit.record("decision", case_id=case.case_id, source=source, ranked_actions=ranked)
         action, blocked = self.policy.filter_ranked(case, ranked)
